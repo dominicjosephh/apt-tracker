@@ -219,6 +219,50 @@ h1::before{
 .bs{padding:10px 18px;border-radius:10px;border:none;background:var(--ink);color:#fff;cursor:pointer;font-size:13px;font-weight:600;box-shadow:var(--shadow-md);}
 .bs:hover{background:#2a2520;transform:translateY(-1px);}
 
+/* ---------- autofill from URL ---------- */
+.autofill-wrap{
+  margin:-4px 0 1.1rem; padding:10px 12px;
+  background:linear-gradient(135deg,#f4f0ff 0%,#eaf5ef 100%);
+  border:1px solid #dcd4f5; border-radius:11px;
+}
+.autofill-bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+.autofill-bar input{
+  flex:1;min-width:0;padding:8px 10px;border:1px solid #d1c9ec;border-radius:8px;
+  background:#fff;font-size:12.5px;outline:none;color:var(--ink);
+  transition:border-color .12s,box-shadow .12s;
+}
+.autofill-bar input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft);}
+.autofill-btn{
+  padding:8px 13px;border:none;border-radius:8px;cursor:pointer;
+  background:linear-gradient(135deg,var(--accent) 0%,#8a7aff 100%);color:#fff;
+  font-size:12.5px;font-weight:600;letter-spacing:.01em;
+  box-shadow:0 2px 6px rgba(107,92,255,.25);
+  transition:transform .12s,box-shadow .12s,opacity .12s;
+  white-space:nowrap;
+}
+.autofill-btn:hover:not(:disabled){transform:translateY(-1px);box-shadow:0 4px 10px rgba(107,92,255,.3);}
+.autofill-btn:disabled{opacity:.55;cursor:not-allowed;}
+.autofill-status{
+  font-size:11.5px;color:var(--ink-2);margin-top:6px;min-height:14px;
+  display:flex;align-items:center;gap:6px;flex-wrap:wrap;
+}
+.autofill-status.err{color:var(--red);}
+.autofill-status.ok{color:var(--green);}
+.autofill-keyline{
+  display:flex;gap:6px;align-items:center;flex-wrap:wrap;
+  font-size:11px;color:var(--mute);margin-top:4px;
+}
+.autofill-keyline a,.autofill-keyline button.lnkb{
+  font-size:11px;color:var(--blue);background:none;border:none;
+  padding:0;cursor:pointer;text-decoration:underline;font-family:inherit;
+}
+.autofill-keyline a:hover,.autofill-keyline button.lnkb:hover{color:#0d4a8e;}
+.autofill-spin{
+  display:inline-block;width:11px;height:11px;border:2px solid #d1c9ec;
+  border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;
+}
+@keyframes spin{to{transform:rotate(360deg);}}
+
 /* rating stars interactive */
 .star-row{display:flex;gap:6px;}
 .star-btn{background:none;border:none;cursor:pointer;font-size:24px;color:#e2dcd2;padding:0;transition:color .12s, transform .1s;}
@@ -298,6 +342,14 @@ h1::before{
 <div class="overlay" id="modal">
   <div class="modal">
     <h2 id="modal-title">Add listing</h2>
+    <div class="autofill-wrap" id="autofill-wrap">
+      <div class="autofill-bar">
+        <input type="text" id="autofill-url" placeholder="Paste a Zillow / Apartments.com / listing URL…" />
+        <button type="button" class="autofill-btn" id="autofill-btn" onclick="autoFillFromURL()">&#10022; Auto-fill</button>
+      </div>
+      <div class="autofill-status" id="autofill-status"></div>
+      <div class="autofill-keyline" id="autofill-keyline"></div>
+    </div>
     <div class="fg">
       <div class="fgrp full"><label>Name / building</label><input type="text" id="f-name" placeholder="6814 E Riverside Dr #34" /></div>
       <div class="fgrp"><label>Neighborhood / area</label><input type="text" id="f-hood" placeholder="Riverside" /></div>
@@ -649,6 +701,15 @@ function openModal(idx){
   editId = editIdx>=0 ? (apts[editIdx]&&apts[editIdx].id) || null : null;
   const a=editIdx>=0?apts[editIdx]:{};
   document.getElementById('modal-title').textContent=editIdx>=0?'Edit listing':'Add listing';
+  const afWrap=document.getElementById('autofill-wrap');
+  if(afWrap){
+    afWrap.style.display = editIdx>=0 ? 'none' : '';
+    const afUrl=document.getElementById('autofill-url');
+    const afStatus=document.getElementById('autofill-status');
+    if(afUrl) afUrl.value='';
+    if(afStatus){ afStatus.className='autofill-status'; afStatus.textContent=''; }
+    renderAutofillKeyline();
+  }
   [['name','name'],['hood','neighborhood'],['addr','address'],['url','url'],['price','price'],['sqft','sqft'],['avail','avail'],['beds','beds'],['notes','notes']].forEach(([id,key])=>{
     const el=document.getElementById('f-'+id); if(el) el.value=a[key]||'';
   });
@@ -704,6 +765,168 @@ function deleteApt(i){
   if(confirm('Remove "'+a.name+'" from the list?')){
     apts.splice(i,1); pushState(); render();
   }
+}
+
+/* ---------- autofill from URL (Claude API, per-session key) ---------- */
+const APIKEY_SESSION = 'apt-tracker-anthropic-key';
+
+function getApiKey(){
+  try{ return sessionStorage.getItem(APIKEY_SESSION) || ''; }catch(e){ return ''; }
+}
+function setApiKey(k){
+  try{ sessionStorage.setItem(APIKEY_SESSION, k); }catch(e){}
+}
+function clearApiKey(){
+  try{ sessionStorage.removeItem(APIKEY_SESSION); }catch(e){}
+}
+
+function renderAutofillKeyline(){
+  const line=document.getElementById('autofill-keyline');
+  if(!line) return;
+  const has=!!getApiKey();
+  if(has){
+    line.innerHTML='API key stored for this browser session. <button type="button" class="lnkb" onclick="resetApiKey()">Reset key</button>';
+  } else {
+    line.innerHTML='Needs a Claude API key (stored only for this session). <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">Get one</a>';
+  }
+}
+
+function resetApiKey(){
+  clearApiKey();
+  renderAutofillKeyline();
+  const s=document.getElementById('autofill-status');
+  if(s){ s.className='autofill-status'; s.textContent='Key cleared.'; }
+}
+
+function promptForApiKey(){
+  const k = prompt('Paste your Claude API key (starts with sk-ant-...). Stored only for this browser session.');
+  if(!k) return '';
+  const trimmed = k.trim();
+  if(!trimmed.startsWith('sk-ant-')){
+    alert('That doesn\u2019t look like a Claude API key. It should start with "sk-ant-".');
+    return '';
+  }
+  setApiKey(trimmed);
+  renderAutofillKeyline();
+  return trimmed;
+}
+
+function setAfStatus(text, kind){
+  const s=document.getElementById('autofill-status');
+  if(!s) return;
+  s.className = 'autofill-status' + (kind ? ' '+kind : '');
+  s.innerHTML = text;
+}
+
+async function autoFillFromURL(){
+  const urlInput=document.getElementById('autofill-url');
+  const btn=document.getElementById('autofill-btn');
+  const url=(urlInput?urlInput.value.trim():'');
+  if(!url){ setAfStatus('Paste a listing URL first.', 'err'); return; }
+  if(!/^https?:\/\//i.test(url)){ setAfStatus('URL must start with http:// or https://', 'err'); return; }
+
+  let key = getApiKey();
+  if(!key){
+    key = promptForApiKey();
+    if(!key){ setAfStatus('Canceled — no API key provided.', 'err'); return; }
+  }
+
+  btn.disabled = true;
+  setAfStatus('<span class="autofill-spin"></span> Fetching listing page…');
+
+  // 1) pull the page via a CORS proxy
+  let html='';
+  try{
+    const proxied = 'https://api.allorigins.win/get?url=' + encodeURIComponent(url);
+    const r = await fetch(proxied);
+    if(!r.ok) throw new Error('proxy HTTP '+r.status);
+    const j = await r.json();
+    html = (j && j.contents) || '';
+    if(!html) throw new Error('empty response from proxy');
+  }catch(e){
+    btn.disabled=false;
+    setAfStatus('Could not fetch the page ('+(e.message||'network error')+'). Some sites block proxies — fill in manually.', 'err');
+    return;
+  }
+
+  // strip tags → keep it compact for the model
+  const text = html
+    .replace(/<script[\s\S]*?<\/script>/gi,' ')
+    .replace(/<style[\s\S]*?<\/style>/gi,' ')
+    .replace(/<[^>]+>/g,' ')
+    .replace(/&nbsp;/g,' ')
+    .replace(/\s+/g,' ')
+    .trim()
+    .slice(0, 18000);
+
+  setAfStatus('<span class="autofill-spin"></span> Asking Claude to extract listing details…');
+
+  // 2) call Claude
+  const systemPrompt = 'You extract apartment / house rental listing details from scraped web page text. Respond with ONLY a single JSON object, no prose, no code fences. Use null for anything you cannot determine. Fields: name (building name or address headline), neighborhood (area or neighborhood name only, short), address (full street address if present), price (monthly rent as a number, no $ or commas), sqft (number only), beds (string like "3 / 2.5" meaning beds / baths — if only beds known, just the number; if unknown, null), avail (available date in YYYY-MM-DD if present, else null), type ("house" for single-family/townhouse, "apt" for apartments/condos), notes (1–2 short sentences of highlights like pool, W/D, pet friendly).';
+  const userPrompt = 'URL: '+url+'\n\nPage text:\n'+text+'\n\nReturn JSON only.';
+
+  let json=null;
+  try{
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method:'POST',
+      headers:{
+        'Content-Type':'application/json',
+        'x-api-key': key,
+        'anthropic-version':'2023-06-01',
+        'anthropic-dangerous-direct-browser-access':'true'
+      },
+      body: JSON.stringify({
+        model:'claude-sonnet-4-5',
+        max_tokens: 700,
+        system: systemPrompt,
+        messages: [{role:'user', content: userPrompt}]
+      })
+    });
+    if(resp.status === 401 || resp.status === 403){
+      clearApiKey(); renderAutofillKeyline();
+      btn.disabled=false;
+      setAfStatus('API key rejected. Cleared — click Auto-fill again to enter a new one.', 'err');
+      return;
+    }
+    if(!resp.ok){
+      const errText = await resp.text().catch(()=>'')
+      throw new Error('HTTP '+resp.status+' '+errText.slice(0,160));
+    }
+    const data = await resp.json();
+    const raw = (data && data.content && data.content[0] && data.content[0].text) || '';
+    // tolerate code fences or stray prose
+    const m = raw.match(/\{[\s\S]*\}/);
+    if(!m) throw new Error('no JSON in response');
+    json = JSON.parse(m[0]);
+  }catch(e){
+    btn.disabled=false;
+    setAfStatus('Claude extraction failed: '+(e.message||e)+'. Fill in manually.', 'err');
+    return;
+  }
+
+  // 3) populate fields (don't clobber non-empty user input)
+  const setIf = (id, val) => {
+    if(val===null || val===undefined || val==='') return;
+    const el=document.getElementById(id); if(!el) return;
+    if(!el.value) el.value = String(val);
+  };
+  setIf('f-name',  json.name);
+  setIf('f-hood',  json.neighborhood);
+  setIf('f-addr',  json.address);
+  setIf('f-price', json.price);
+  setIf('f-sqft',  json.sqft);
+  setIf('f-avail', json.avail);
+  setIf('f-beds',  json.beds);
+  setIf('f-notes', json.notes);
+  if(json.type==='house' || json.type==='apt'){
+    const t=document.getElementById('f-type'); if(t) t.value=json.type;
+  }
+  // always store the URL the user pasted
+  const urlEl=document.getElementById('f-url');
+  if(urlEl && !urlEl.value) urlEl.value = url;
+
+  btn.disabled = false;
+  setAfStatus('Filled in what Claude found — review & adjust before saving.', 'ok');
 }
 
 function scheduleTour(i){
